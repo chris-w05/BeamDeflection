@@ -58,6 +58,12 @@ export default function App() {
     return Math.max(min, Math.min(max, v)); // clamp to [min, max]
   }
 
+  function clampValue(value, min = -Infinity, max = Infinity) {
+    let v = parseFloat(value);
+    if (!isFinite(v)) return null;
+    return Math.max(min, Math.min(max, v));
+  }
+
 
   //For parsing distributed loads
   function safeQ(x, expr, L) {
@@ -191,50 +197,117 @@ export default function App() {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <Label>Length (m)</Label>
-            <Input value={lengthStr} onChange={(e) => setLengthStr(e.target.value)} placeholder="6.0" />
+            <Input
+              value={lengthStr}
+              onChange={(e) => {
+                let val = parseFloat(e.target.value);
+                if (isNaN(val) || val <= 0) val = 0.1; // minimum length
+                setLengthStr(val.toString());
+              }}
+              placeholder="6.0"
+            />
           </div>
           <div>
             <Label>E (Pa)</Label>
-            <Input value={EStr} onChange={(e) => setEStr(e.target.value)} placeholder="210e9" />
+            <Input
+              value={EStr}
+              onChange={(e) => {
+                let val = parseFloat(e.target.value);
+                if (isNaN(val) || val <= 0) val = 1e3; // minimum E
+                setEStr(val.toString());
+              }}
+              placeholder="210e9"
+            />
           </div>
           <div>
             <Label>I (m⁴)</Label>
-            <Input value={IStr} onChange={(e) => setIStr(e.target.value)} placeholder="8.1e-6" />
+            <Input
+              value={IStr}
+              onChange={(e) => {
+                let val = parseFloat(e.target.value);
+                if (isNaN(val) || val <= 0) val = 1e-12; // minimum I
+                setIStr(val.toString());
+              }}
+              placeholder="8.1e-6"
+            />
           </div>
           <div>
             <Label>Mesh elements</Label>
-            <Input value={nElementsStr} onChange={(e) => setNElementsStr(e.target.value)} placeholder="200" />
+            <Input
+              value={nElementsStr}
+              onChange={(e) => {
+                let val = parseInt(e.target.value);
+                if (isNaN(val) || val < 2) val = 2; // minimum 2 elements
+                if (val > 1000) val = 1000; // maximum 1000 elements
+                setNElementsStr(val.toString());
+              }}
+              placeholder="200"
+            />
           </div>
           <div>
             <Label>Left support (x=0)</Label>
-            <select className="border p-2 w-full" value={leftType} onChange={e => setLeftType(e.target.value)}>
-              <option>PIN</option><option>FIXED</option><option>FREE</option>
+            <select
+              className="border p-2 w-full"
+              value={leftType}
+              onChange={(e) => setLeftType(e.target.value)}
+            >
+              <option>PIN</option>
+              <option>FIXED</option>
+              <option>FREE</option>
             </select>
           </div>
           <div>
             <Label>Right support (x={lengthStr || "L"})</Label>
-            <select className="border p-2 w-full" value={rightType} onChange={e => setRightType(e.target.value)}>
-              <option>PIN</option><option>FIXED</option><option>FREE</option>
+            <select
+              className="border p-2 w-full"
+              value={rightType}
+              onChange={(e) => setRightType(e.target.value)}
+            >
+              <option>PIN</option>
+              <option>FIXED</option>
+              <option>FREE</option>
             </select>
           </div>
         </div>
 
+        {/* Interior Supports */}
         <h3 className="mt-6 font-semibold">Interior Supports</h3>
-        {interiorSupports.map(item => (
+        {interiorSupports.map((item) => (
           <div key={item.id} className="flex gap-2 mt-2">
-            <Input placeholder="x (m)" value={item.xStr} onChange={e => updateInterior(item.id, 'xStr', e.target.value)} />
-            <select value={item.type} onChange={e => updateInterior(item.id, 'type', e.target.value)}>
-              <option>PIN</option><option>FIXED</option><option>FREE</option>
+            <Input
+              placeholder="x (m)"
+              value={item.xStr}
+              onChange={(e) => {
+                let val = parseFloat(e.target.value);
+                const L = parseFloat(lengthStr) || 6.0;
+                if (isNaN(val) || val < 0) val = 0;
+                if (val > L) val = L;
+                updateInterior(item.id, "xStr", val.toString());
+              }}
+            />
+            <select
+              value={item.type}
+              onChange={(e) => updateInterior(item.id, "type", e.target.value)}
+            >
+              <option>PIN</option>
+              <option>FIXED</option>
+              <option>FREE</option>
             </select>
             <Button onClick={() => deleteInterior(item.id)}>Delete</Button>
           </div>
         ))}
-        <Button className="mt-2 w-full" onClick={addInteriorSupport}>Add Interior Support</Button>
+        <Button className="mt-2 w-full" onClick={addInteriorSupport}>
+          Add Interior Support
+        </Button>
 
+        {/* Loads */}
         <h3 className="mt-6 font-semibold">Loads</h3>
-        {loadItems.map(item => (
+        {loadItems.map((item) => (
           <div key={item.id} className="border rounded p-4 mt-4">
-            <select value={item.type} onChange={e => updateLoad(item.id, 'type', e.target.value)}>
+            <select
+              value={item.type}
+              onChange={(e) => updateLoad(item.id, "type", e.target.value)}
+            >
               <option value="point">Point Load (+ up)</option>
               <option value="moment">Moment (+ CCW)</option>
               <option value="distributed_load">Distributed Load</option>
@@ -242,34 +315,86 @@ export default function App() {
             {(item.type === "point" || item.type === "moment") && (
               <>
                 <Label>Position (m)</Label>
-                <Input value={item.xStr} onChange={e => updateLoad(item.id, 'xStr', e.target.value)} />
+                <Input
+                  value={item.xStr}
+                  onChange={(e) => {
+                    let val = parseFloat(e.target.value);
+                    const L = parseFloat(lengthStr) || 6.0;
+                    if (isNaN(val) || val < 0) val = 0;
+                    if (val > L) val = L;
+                    updateLoad(item.id, "xStr", val.toString());
+                  }}
+                />
                 <Label>Value {item.type === "point" ? "(N)" : "(Nm)"}</Label>
-                <Input value={item.valStr} onChange={e => updateLoad(item.id, 'valStr', e.target.value)} />
+                <Input
+                  value={item.valStr}
+                  onChange={(e) => {
+                    let val = parseFloat(e.target.value);
+                    if (isNaN(val)) val = 0;
+                    updateLoad(item.id, "valStr", val.toString());
+                  }}
+                />
               </>
             )}
             {item.type === "distributed_load" && (
               <>
-                <Label>Start x (m)</Label><Input value={item.x0Str} onChange={e => updateLoad(item.id, 'x0Str', e.target.value)} />
-                <Label>End x (m)</Label><Input value={item.x1Str} onChange={e => updateLoad(item.id, 'x1Str', e.target.value)} />
+                <Label>Start x (m)</Label>
+                <Input
+                  value={item.x0Str}
+                  onChange={(e) => {
+                    let val = parseFloat(e.target.value);
+                    const L = parseFloat(lengthStr) || 6.0;
+                    if (isNaN(val) || val < 0) val = 0;
+                    if (val > L) val = L;
+                    updateLoad(item.id, "x0Str", val.toString());
+                  }}
+                />
+                <Label>End x (m)</Label>
+                <Input
+                  value={item.x1Str}
+                  onChange={(e) => {
+                    let val = parseFloat(e.target.value);
+                    const L = parseFloat(lengthStr) || 6.0;
+                    if (isNaN(val) || val < 0) val = 0;
+                    if (val > L) val = L;
+                    updateLoad(item.id, "x1Str", val.toString());
+                  }}
+                />
                 <label className="flex items-center gap-2">
-                  <input type="checkbox" checked={item.isVariable || false} onChange={e => updateLoad(item.id, 'isVariable', e.target.checked)} />
+                  <input
+                    type="checkbox"
+                    checked={item.isVariable || false}
+                    onChange={(e) => updateLoad(item.id, "isVariable", e.target.checked)}
+                  />
                   Variable q(x)
                 </label>
                 {item.isVariable ? (
                   <>
                     <Label>q(x) expression</Label>
-                    <Input value={item.exprStr} onChange={e => updateLoad(item.id, 'exprStr', e.target.value)} />
+                    <Input
+                      value={item.exprStr}
+                      onChange={(e) => updateLoad(item.id, "exprStr", e.target.value)}
+                    />
                     <small>Example: 5000*(L-x)</small>
                   </>
                 ) : (
                   <>
                     <Label>Constant q (N/m)</Label>
-                    <Input value={item.qStr} onChange={e => updateLoad(item.id, 'qStr', e.target.value)} />
+                    <Input
+                      value={item.qStr}
+                      onChange={(e) => {
+                        let val = parseFloat(e.target.value);
+                        if (isNaN(val)) val = 0;
+                        updateLoad(item.id, "qStr", val.toString());
+                      }}
+                    />
                   </>
                 )}
               </>
             )}
-            <Button className="mt-2 w-full" onClick={() => deleteLoad(item.id)}>Delete Load</Button>
+            <Button className="mt-2 w-full" onClick={() => deleteLoad(item.id)}>
+              Delete Load
+            </Button>
           </div>
         ))}
         <div className="mt-4 flex flex-col gap-2">
