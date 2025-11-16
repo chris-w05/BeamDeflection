@@ -13,6 +13,10 @@ import {
   Legend,
 } from "chart.js";
 
+import { evaluate, parse } from "mathjs";
+
+
+
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend);
 
 const Button = ({ children, ...p }) => (
@@ -47,18 +51,37 @@ export default function App() {
     if (loadItems.length === 0) addLoad("moment");
   }, []);
 
-  function safeParseFloat(s) {
+  function safeParseFloat(s, min = -Infinity, max = Infinity) {
     if (!s?.trim()) return null;
     const v = parseFloat(s);
-    return isFinite(v) ? v : null;
+    if (!isFinite(v)) return null;
+    return Math.max(min, Math.min(max, v)); // clamp to [min, max]
   }
 
+
+  //For parsing distributed loads
+  function safeQ(x, expr, L) {
+    try {
+      // Create a mathjs scope with variables x and L, and math functions
+      const scope = { x, L, e: Math.E, pi: Math.PI };
+      return evaluate(expr, scope);
+    } catch (err) {
+      console.error("Error evaluating q(x):", expr, err);
+      return 0; // fallback
+    }
+  }
+
+
   function buildPayload() {
-    const L = safeParseFloat(lengthStr) || 6.0;
-    const E = safeParseFloat(EStr) || 210e9;
-    const I = safeParseFloat(IStr) || 8.1e-6;
-    const nElements = safeParseFloat(nElementsStr) || 200;
-    if ([L, E, I].some(x => x <= 0)) return null;
+    const L = safeParseFloat(lengthStr, 0.001) || 6.0;       // length > 0
+    const E = safeParseFloat(EStr, 1e-6) || 210e9;           // E > 0
+    const I = safeParseFloat(IStr, 1e-12) || 8.1e-6;         // I > 0
+    const nElements = safeParseFloat(nElementsStr, 1, 1000) || 200; // 1 <= nElements <= 1000
+
+    if ([L, E, I, nElements].some(x => x === null)) {
+      setErrorMsg("Invalid input: all fields must be numeric and within allowed ranges.");
+      return null;
+    }
 
     let constraints = [
       [0.0, leftType.toUpperCase()],
@@ -66,45 +89,38 @@ export default function App() {
     ];
 
     interiorSupports.forEach(item => {
-      let x = safeParseFloat(item.xStr);
-      if (x !== null) {
-        x = Math.max(0, Math.min(L, x));
-        if (x > 0 && x < L) constraints.push([x, item.type.toUpperCase()]);
+      let x = safeParseFloat(item.xStr, 0, L);
+      if (x !== null && x > 0 && x < L) {
+        constraints.push([x, item.type.toUpperCase()]);
       }
     });
 
     constraints.sort((a, b) => a[0] - b[0]);
 
     const loads = [];
-
     loadItems.forEach(item => {
       if (item.type === "point") {
-        let x = safeParseFloat(item.xStr);
+        let x = safeParseFloat(item.xStr, 0, L);
         const Fy = safeParseFloat(item.valStr);
-        if (x === null || Fy === null) return;
-        x = Math.max(0, Math.min(L, x));
-        loads.push(["point", x, Fy]);
+        if (x !== null && Fy !== null) loads.push(["point", x, Fy]);
       } else if (item.type === "moment") {
-        let x = safeParseFloat(item.xStr);
+        let x = safeParseFloat(item.xStr, 0, L);
         const M = safeParseFloat(item.valStr);
-        if (x === null || M === null) return;
-        x = Math.max(0, Math.min(L, x));
-        loads.push(["moment", x, M]);
+        if (x !== null && M !== null) loads.push(["moment", x, M]);
       } else if (item.type === "distributed_load") {
-        const x0 = safeParseFloat(item.x0Str);
-        const x1 = safeParseFloat(item.x1Str);
-        if (x0 === null || x1 === null) return;
-        let minx = Math.max(0, Math.min(x0, x1));
-        let maxx = Math.min(L, Math.max(x0, x1));
-        if (maxx <= minx) return;
+        const x0 = safeParseFloat(item.x0Str, 0, L);
+        const x1 = safeParseFloat(item.x1Str, 0, L);
+        if (x0 === null || x1 === null || x1 <= x0) return;
+
         if (item.isVariable) {
           const expr = item.exprStr?.trim();
           if (!expr) return;
-          loads.push(["dist", minx, maxx, expr]);
+          // q(x) will be processed safely later
+          loads.push(["dist", x0, x1, expr]);
         } else {
           const q = safeParseFloat(item.qStr);
           if (q === null) return;
-          loads.push(["dist", minx, maxx, q]);
+          loads.push(["dist", x0, x1, q]);
         }
       }
     });
