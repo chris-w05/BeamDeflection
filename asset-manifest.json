@@ -1,15 +1,15 @@
 {
   "files": {
     "main.css": "/BeamDeflection/static/css/main.7f7ef9e6.css",
-    "main.js": "/BeamDeflection/static/js/main.37e4ef02.js",
+    "main.js": "/BeamDeflection/static/js/main.3eb226f1.js",
     "static/js/488.79b19bc3.chunk.js": "/BeamDeflection/static/js/488.79b19bc3.chunk.js",
     "index.html": "/BeamDeflection/index.html",
     "main.7f7ef9e6.css.map": "/BeamDeflection/static/css/main.7f7ef9e6.css.map",
-    "main.37e4ef02.js.map": "/BeamDeflection/static/js/main.37e4ef02.js.map",
+    "main.3eb226f1.js.map": "/BeamDeflection/static/js/main.3eb226f1.js.map",
     "488.79b19bc3.chunk.js.map": "/BeamDeflection/static/js/488.79b19bc3.chunk.js.map"
   },
   "entrypoints": [
     "static/css/main.7f7ef9e6.css",
-    "static/js/main.37e4ef02.js"
+    "static/js/main.3eb226f1.js"
   ]
 }
