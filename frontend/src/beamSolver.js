@@ -93,7 +93,6 @@ export function solveBeam(L, nElements, E, I, constraints = [], loads = []) {
     for (const load of loads) {
         if (load[0] === "point") {
             const [_, x, Fy] = load;
-            // snap to closest node in F (consistent nodal application), but keep exact x for diagram
             let idx = 0, minDist = Infinity;
             xs.forEach((xi, i) => { const d = Math.abs(xi - x); if (d < minDist) { minDist = d; idx = i; } });
             F[2 * idx] += Fy;
@@ -109,7 +108,6 @@ export function solveBeam(L, nElements, E, I, constraints = [], loads = []) {
             const qFunc = typeof q === "function" ? q : (x) => q;
             distLoads.push({ x0, x1, qFunc });
 
-            // consistent nodal load vector (element-wise integration)
             const nIntegrationPoints = 25;
             for (let e = 0; e < nElements; e++) {
                 const xe1 = xs[e], xe2 = xs[e + 1];
@@ -139,122 +137,115 @@ export function solveBeam(L, nElements, E, I, constraints = [], loads = []) {
         }
     }
 
-    // keep a copy of applied nodal forces/moments (before constraints)
     const F_applied = F.slice();
 
-    // --- constraints ---
-    const constrained = new Set();
-    for (const [xpos, typ] of constraints) {
+    // --- constraints: PIN/ROLLER/SIMPLE -> v fixed; FIXED -> v, theta fixed ---
+    const constrained = new Set(); // Dirichlet DOFs with value 0
+    for (const [xpos, typRaw] of constraints) {
+        const typ = String(typRaw || "").toUpperCase();
         let idx = 0, minDist = Infinity;
         xs.forEach((xi, i) => { const d = Math.abs(xi - xpos); if (d < minDist) { minDist = d; idx = i; } });
-        const t = typ.toUpperCase();
-        if (["FIXED", "RIGID", "CLAMPED"].includes(t)) { constrained.add(2 * idx); constrained.add(2 * idx + 1); }
-        else if (["PIN", "ROLLER", "SIMPLE"].includes(t)) { constrained.add(2 * idx); }
+        const vDof = 2 * idx, tDof = 2 * idx + 1;
+        if (["FIXED", "RIGID", "CLAMPED"].includes(typ)) { constrained.add(vDof); constrained.add(tDof); }
+        else if (["PIN", "ROLLER", "SIMPLE"].includes(typ)) { constrained.add(vDof); }
     }
 
+    // --- partition and solve indeterminate systems ---
     const allDofs = Array.from({ length: totalDofs }, (_, i) => i);
     const freeDofs = allDofs.filter(i => !constrained.has(i));
+    const consDofs = allDofs.filter(i => constrained.has(i));
 
-    // Partition matrices (Kff, Ff)
     const Kff = freeDofs.map(i => freeDofs.map(j => K[i][j]));
-    const Ff = freeDofs.map(i => F[i]);
+    const Kfc = freeDofs.map(i => consDofs.map(j => K[i][j]));
+    const Kcf = consDofs.map(i => freeDofs.map(j => K[i][j]));
+    const Kcc = consDofs.map(i => consDofs.map(j => K[i][j]));
 
+    const Ff = freeDofs.map(i => F[i]);
+    const Fc = consDofs.map(i => F[i]); // usually 0 unless you placed loads at constrained nodes
+
+    // solve Kff * uf = Ff - Kfc * uc, with uc = 0
     let u = Array(totalDofs).fill(0);
     if (Kff.length > 0) {
-        const uFree = solveLinearSystem(Kff, Ff);
-        freeDofs.forEach((d, i) => u[d] = uFree[i]);
+        const rhs = Ff.slice(); // uc = 0 => rhs = Ff
+        const uf = solveLinearSystem(Kff, rhs);
+        freeDofs.forEach((d, i) => u[d] = uf[i]);
     }
+    // uc = 0 at constrained DOFs (already)
+    consDofs.forEach(d => u[d] = 0);
 
-    // reactions at all DOFs
-    const reactions = K.map((row, i) => row.reduce((sum, v, j) => sum + v * u[j], 0)).map((v, i) => v - F[i]);
+    // reactions at constrained DOFs: Rc = Kcf*uf + Kcc*uc - Fc = Kcf*uf - Fc
+    const reactions = Array(totalDofs).fill(0);
+    consDofs.forEach((d, iRow) => {
+        let r = -Fc[iRow];
+        for (let j = 0; j < freeDofs.length; j++) r += Kcf[iRow][j] * u[freeDofs[j]];
+        // Kcc*uc is 0 since uc=0
+        reactions[d] = r;
+    });
 
-    const vs = u.filter((_, i) => i % 2 === 0); // vertical displacement
-    let maxDef = Math.max(...vs.map(v => Math.abs(v)));
-    let scale = 1;
+    // displacements for plotting
+    const vs = u.filter((_, i) => i % 2 === 0);
+    const scale = 1;
 
-    // --- INTERNAL FORCE (Shear & Moment) computation ---
-    // Distributed load field
+    // --- INTERNAL FORCE (shear & moment) using your fixed signs ---
     function q_total(x) {
         let s = 0;
-        for (const d of distLoads) {
-            if (x >= d.x0 && x <= d.x1) s += d.qFunc(x);
-        }
+        for (const d of distLoads) if (x >= d.x0 && x <= d.x1) s += d.qFunc(x);
         return s;
     }
 
-    // Global sampling for diagrams
     const samplesPerElement = 12;
     const totalSamples = nElements * samplesPerElement + 1;
     const x_samples = linspace(0, L, totalSamples);
     const dx_global = L / (totalSamples - 1);
     const eps = 1e-12;
 
-    // ∫0^x q(s) ds via trapezoidal on samples
     const q_vals = x_samples.map(xi => q_total(xi));
     const cumulative_q = [];
     {
-        let cum = 0;
-        cumulative_q.push(0);
+        let cum = 0; cumulative_q.push(0);
         for (let i = 1; i < x_samples.length; i++) {
             const area = 0.5 * (q_vals[i - 1] + q_vals[i]) * dx_global;
-            cum += area;
-            cumulative_q.push(cum);
+            cum += area; cumulative_q.push(cum);
         }
     }
 
-    // Concentrated loads/moments with exact positions
     const pLoads = pointLoads.map(p => ({ x: p.x, val: p.Fy }));
     const pMoms = pointMoments.map(p => ({ x: p.x, val: p.M }));
 
-    // Helper: check if an x lies at a constrained node
     function isAtConstrainedNode(x) {
         for (let j = 0; j < nNodes; j++) {
-            if (Math.abs(x - xs[j]) < eps) {
-                if (constrained.has(2 * j) || constrained.has(2 * j + 1)) return true;
-            }
+            if (Math.abs(x - xs[j]) < eps && (constrained.has(2 * j) || constrained.has(2 * j + 1))) return true;
         }
         return false;
     }
 
-    // Precompute cumulative applied point loads/moments strictly to the left of xi,
-    // and exclude those located at constrained nodes (already represented by support reactions).
     const cumulativeAppliedPointLoadsAtSample = x_samples.map(xi => {
         let s = 0;
-        for (const pl of pLoads) {
-            if (!isAtConstrainedNode(pl.x) && pl.x < xi - eps) s += pl.val;
-        }
+        for (const pl of pLoads) if (!isAtConstrainedNode(pl.x) && pl.x < xi - eps) s += pl.val;
         return s;
     });
     const cumulativeAppliedMomAtSample = x_samples.map(xi => {
         let s = 0;
-        for (const pm of pMoms) {
-            if (!isAtConstrainedNode(pm.x) && pm.x < xi - eps) s += pm.val;
-        }
+        for (const pm of pMoms) if (!isAtConstrainedNode(pm.x) && pm.x < xi - eps) s += pm.val;
         return s;
     });
 
-    // Support-only reactions: include only constrained DOFs in sums,
-    // and use strict left-of-x for clean steps.
     const cumulativeSupportReactionAtSample = x_samples.map(xi => {
         let s = 0;
         for (let i = 0; i < nNodes; i++) {
-            if (xs[i] < xi - eps && constrained.has(2 * i)) {
-                s += reactions[2 * i] || 0; // vertical reaction
-            }
+            if (xs[i] < xi - eps && constrained.has(2 * i)) s += reactions[2 * i] || 0;
         }
         return s;
     });
     const cumulativeSupportReactionMomAtSample = x_samples.map(xi => {
         let s = 0;
         for (let i = 0; i < nNodes; i++) {
-            if (xs[i] < xi - eps && constrained.has(2 * i + 1)) {
-                s += reactions[2 * i + 1] || 0; // moment reaction
-            }
+            if (xs[i] < xi - eps && constrained.has(2 * i + 1)) s += reactions[2 * i + 1] || 0;
         }
         return s;
     });
 
-    // Shear: V(x) = sum(support reactions < x) - sum(point loads < x) - ∫0^x q(s) ds
+    // Use the sign convention that made your diagrams correct
     const shear_samples = [];
     for (let i = 0; i < x_samples.length; i++) {
         const Vx = cumulativeSupportReactionAtSample[i]
@@ -263,19 +254,15 @@ export function solveBeam(L, nElements, E, I, constraints = [], loads = []) {
         shear_samples.push(Vx);
     }
 
-    // ∫0^x V(s) ds
     const cumulativeIntegralV = [];
     {
-        let cumV = 0;
-        cumulativeIntegralV.push(0);
+        let cumV = 0; cumulativeIntegralV.push(0);
         for (let i = 1; i < x_samples.length; i++) {
             const areaV = 0.5 * (shear_samples[i - 1] + shear_samples[i]) * dx_global;
-            cumV += areaV;
-            cumulativeIntegralV.push(cumV);
+            cumV += areaV; cumulativeIntegralV.push(cumV);
         }
     }
 
-    // Moment: M(x) = sum(support reaction moments < x) - sum(point moments < x) + ∫0^x V(s) ds
     const moment_samples = [];
     for (let i = 0; i < x_samples.length; i++) {
         const Mx = - cumulativeSupportReactionMomAtSample[i]
@@ -284,8 +271,6 @@ export function solveBeam(L, nElements, E, I, constraints = [], loads = []) {
         moment_samples.push(Mx);
     }
 
-
-    // Return results
     return {
         x: xs,
         v_scaled: vs.map(v => v * scale),
@@ -297,4 +282,5 @@ export function solveBeam(L, nElements, E, I, constraints = [], loads = []) {
         moment_samples
     };
 }
+
 
