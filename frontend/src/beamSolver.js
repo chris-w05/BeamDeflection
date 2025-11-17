@@ -30,11 +30,18 @@ function solveLinearSystem(A, b) {
     const x = Array(n).fill(0);
     const M = A.map((row, i) => row.concat(b[i]));
 
-    // Forward elimination
+    // Forward elimination with partial pivoting
     for (let k = 0; k < n; k++) {
         let i_max = k;
-        for (let i = k + 1; i < n; i++) if (Math.abs(M[i][k]) > Math.abs(M[i_max][k])) i_max = i;
+        for (let i = k + 1; i < n; i++) {
+            if (Math.abs(M[i][k]) > Math.abs(M[i_max][k])) i_max = i;
+        }
         [M[k], M[i_max]] = [M[i_max], M[k]];
+
+        if (Math.abs(M[k][k]) < 1e-10) {
+            console.warn("Singular matrix detected");
+            return x; // return zeros
+        }
 
         for (let i = k + 1; i < n; i++) {
             const f = M[i][k] / M[k][k];
@@ -44,8 +51,11 @@ function solveLinearSystem(A, b) {
 
     // Back substitution
     for (let i = n - 1; i >= 0; i--) {
-        x[i] = M[i][n] / M[i][i];
-        for (let k = i - 1; k >= 0; k--) M[k][n] -= M[k][i] * x[i];
+        x[i] = M[i][n];
+        for (let j = i + 1; j < n; j++) {
+            x[i] -= M[i][j] * x[j];
+        }
+        x[i] /= M[i][i];
     }
     return x;
 }
@@ -61,7 +71,7 @@ function beamElementStiffness(EI, L) {
     return k.map(row => row.map(v => v * (EI / (L * L * L))));
 }
 
-// small trapezoidal helper over an array of y values with uniform dx
+// Trapezoidal integration helper
 function trapzArrayUniform(y, dx) {
     if (!y || y.length <= 1) return 0;
     let sum = 0;
@@ -69,7 +79,7 @@ function trapzArrayUniform(y, dx) {
     return sum * dx;
 }
 
-// Assemble global stiffness K and force F
+// Main solver
 export function solveBeam(L, nElements, E, I, constraints = [], loads = []) {
     const nNodes = nElements + 1;
     const xs = linspace(0, L, nNodes);
@@ -77,7 +87,7 @@ export function solveBeam(L, nElements, E, I, constraints = [], loads = []) {
     const K = zeros(totalDofs, totalDofs);
     const F = Array(totalDofs).fill(0);
 
-    // --- assemble stiffness ---
+    // --- Assemble stiffness ---
     for (let e = 0; e < nElements; e++) {
         const Le = xs[e + 1] - xs[e];
         const ke = beamElementStiffness(E * I, Le);
@@ -85,30 +95,36 @@ export function solveBeam(L, nElements, E, I, constraints = [], loads = []) {
         addMatrixSlice(K, ke, dofs);
     }
 
-    // --- apply loads (build applied force vector F) ---
-    const pointLoads = [];   // {x, Fy}
-    const pointMoments = []; // {x, M}
-    const distLoads = [];    // {x0, x1, qFunc}
+    // --- Apply loads ---
+    const pointLoads = [];
+    const pointMoments = [];
+    const distLoads = [];
 
     for (const load of loads) {
         if (load[0] === "point") {
             const [_, x, Fy] = load;
             let idx = 0, minDist = Infinity;
-            xs.forEach((xi, i) => { const d = Math.abs(xi - x); if (d < minDist) { minDist = d; idx = i; } });
+            xs.forEach((xi, i) => {
+                const d = Math.abs(xi - x);
+                if (d < minDist) { minDist = d; idx = i; }
+            });
             F[2 * idx] += Fy;
             pointLoads.push({ x, Fy });
         } else if (load[0] === "moment") {
             const [_, x, M] = load;
             let idx = 0, minDist = Infinity;
-            xs.forEach((xi, i) => { const d = Math.abs(xi - x); if (d < minDist) { minDist = d; idx = i; } });
+            xs.forEach((xi, i) => {
+                const d = Math.abs(xi - x);
+                if (d < minDist) { minDist = d; idx = i; }
+            });
             F[2 * idx + 1] += M;
             pointMoments.push({ x, M });
         } else if (load[0] === "dist") {
             const [_, x0, x1, q] = load;
-            const qFunc = typeof q === "function" ? q : (x) => q;
+            const qFunc = typeof q === "function" ? q : () => q;
             distLoads.push({ x0, x1, qFunc });
 
-            const nIntegrationPoints = 25;
+            const nInt = 25;
             for (let e = 0; e < nElements; e++) {
                 const xe1 = xs[e], xe2 = xs[e + 1];
                 const Le = xe2 - xe1;
@@ -116,14 +132,14 @@ export function solveBeam(L, nElements, E, I, constraints = [], loads = []) {
                 const b = Math.min(xe2, x1);
                 if (b <= a) continue;
 
-                const xi = Array.from({ length: nIntegrationPoints }, (_, i) => a + (b - a) * i / (nIntegrationPoints - 1));
-                const s = xi.map(xiVal => (xiVal - xe1) / Le);
+                const xi = Array.from({ length: nInt }, (_, i) => a + (b - a) * i / (nInt - 1));
+                const s = xi.map(x => (x - xe1) / Le);
                 const N1 = s.map(si => 1 - 3 * si ** 2 + 2 * si ** 3);
                 const N2 = s.map(si => Le * (si - 2 * si ** 2 + si ** 3));
                 const N3 = s.map(si => 3 * si ** 2 - 2 * si ** 3);
                 const N4 = s.map(si => Le * (si ** 3 - si ** 2));
-                const qvals = xi.map(xiVal => qFunc(xiVal));
-                const dx = (b - a) / (nIntegrationPoints - 1);
+                const qvals = xi.map(qFunc);
+                const dx = (b - a) / (nInt - 1);
 
                 const f1 = trapzArrayUniform(qvals.map((qv, i) => qv * N1[i]), dx);
                 const f2 = trapzArrayUniform(qvals.map((qv, i) => qv * N2[i]), dx);
@@ -137,139 +153,164 @@ export function solveBeam(L, nElements, E, I, constraints = [], loads = []) {
         }
     }
 
-    const F_applied = F.slice();
+    // --- Constraints ---
+    const constrained = new Set();        // DOFs with Dirichlet condition
+    const prescribed = new Map();         // DOF → prescribed value (non-zero)
 
-    // --- constraints: PIN/ROLLER/SIMPLE -> v fixed; FIXED -> v, theta fixed ---
-    const constrained = new Set(); // Dirichlet DOFs with value 0
-    for (const [xpos, typRaw] of constraints) {
-        const typ = String(typRaw || "").toUpperCase();
+    for (const c of constraints) {
+        let xpos, typ, data = {};
+        if (Array.isArray(c)) {
+            [xpos, typ, data = {}] = c;
+            typ = String(typ).toUpperCase();
+        } else continue;
+
         let idx = 0, minDist = Infinity;
-        xs.forEach((xi, i) => { const d = Math.abs(xi - xpos); if (d < minDist) { minDist = d; idx = i; } });
-        const vDof = 2 * idx, tDof = 2 * idx + 1;
-        if (["FIXED", "RIGID", "CLAMPED"].includes(typ)) { constrained.add(vDof); constrained.add(tDof); }
-        else if (["PIN", "ROLLER", "SIMPLE"].includes(typ)) { constrained.add(vDof); }
+        xs.forEach((xi, i) => {
+            const d = Math.abs(xi - xpos);
+            if (d < minDist) { minDist = d; idx = i; }
+        });
+        const vDof = 2 * idx;
+        const tDof = 2 * idx + 1;
+
+        if (["FIXED", "PIN", "ROLLER", "SIMPLE"].includes(typ)) {
+            if (["FIXED"].includes(typ)) {
+                constrained.add(vDof);
+                constrained.add(tDof);
+            } else {
+                constrained.add(vDof);
+            }
+            // Zero displacement by default
+            prescribed.set(vDof, 0);
+            if (constrained.has(tDof)) prescribed.set(tDof, 0);
+        } else if (typ === "ELASTIC") {
+            if (data.ky) K[vDof][vDof] += data.ky;
+            if (data.ktheta) K[tDof][tDof] += data.ktheta;
+        } else if (typ === "PRESCRIBED") {
+            if (data.v !== undefined) {
+                constrained.add(vDof);
+                prescribed.set(vDof, data.v);
+            }
+            if (data.theta !== undefined) {
+                constrained.add(tDof);
+                prescribed.set(tDof, data.theta);
+            }
+        }
     }
 
-    // --- partition and solve indeterminate systems ---
+    // --- Solve system with non-homogeneous Dirichlet BCs ---
     const allDofs = Array.from({ length: totalDofs }, (_, i) => i);
-    const freeDofs = allDofs.filter(i => !constrained.has(i));
-    const consDofs = allDofs.filter(i => constrained.has(i));
+    const freeDofs = allDofs.filter(d => !constrained.has(d));
+    const consDofs = allDofs.filter(d => constrained.has(d));
 
     const Kff = freeDofs.map(i => freeDofs.map(j => K[i][j]));
     const Kfc = freeDofs.map(i => consDofs.map(j => K[i][j]));
-    const Kcf = consDofs.map(i => freeDofs.map(j => K[i][j]));
-    const Kcc = consDofs.map(i => consDofs.map(j => K[i][j]));
 
     const Ff = freeDofs.map(i => F[i]);
-    const Fc = consDofs.map(i => F[i]); // usually 0 unless you placed loads at constrained nodes
 
-    // solve Kff * uf = Ff - Kfc * uc, with uc = 0
+    // Prescribed displacements
+    const uc = consDofs.map(d => prescribed.get(d) ?? 0);
+
+    // RHS = Ff - Kfc * uc
+    const rhs = Ff.map((f, i) => {
+        let val = f;
+        for (let j = 0; j < consDofs.length; j++) {
+            val -= Kfc[i][j] * uc[j];
+        }
+        return val;
+    });
+
+    // Solve for free DOFs
     let u = Array(totalDofs).fill(0);
-    if (Kff.length > 0) {
-        const rhs = Ff.slice(); // uc = 0 => rhs = Ff
+    if (freeDofs.length > 0 && Kff.length > 0) {
         const uf = solveLinearSystem(Kff, rhs);
         freeDofs.forEach((d, i) => u[d] = uf[i]);
     }
-    // uc = 0 at constrained DOFs (already)
-    consDofs.forEach(d => u[d] = 0);
 
-    // reactions at constrained DOFs: Rc = Kcf*uf + Kcc*uc - Fc = Kcf*uf - Fc
+    // Apply prescribed values
+    consDofs.forEach((d, i) => u[d] = uc[i]);
+
+    // --- Reactions (including elastic supports) ---
     const reactions = Array(totalDofs).fill(0);
-    consDofs.forEach((d, iRow) => {
-        let r = -Fc[iRow];
-        for (let j = 0; j < freeDofs.length; j++) r += Kcf[iRow][j] * u[freeDofs[j]];
-        // Kcc*uc is 0 since uc=0
+
+    // For hard constraints (PIN/FIXED/PRESCRIBED): R = K * u - F
+    consDofs.forEach((d, i) => {
+        let r = -F[d];
+        for (let j = 0; j < totalDofs; j++) {
+            r += K[d][j] * u[j];
+        }
         reactions[d] = r;
     });
 
-    // displacements for plotting
-    const vs = u.filter((_, i) => i % 2 === 0);
+    // For elastic supports: add spring forces
+    for (const c of constraints) {
+        if (c[1] === "ELASTIC" && c[2]) {
+            let idx = 0, minDist = Infinity;
+            xs.forEach((xi, i) => {
+                const d = Math.abs(xi - c[0]);
+                if (d < minDist) { minDist = d; idx = i; }
+            });
+            const vDof = 2 * idx;
+            const tDof = 2 * idx + 1;
+            if (c[2].ky) reactions[vDof] += -c[2].ky * u[vDof];
+            if (c[2].ktheta) reactions[tDof] += -c[2].ktheta * u[tDof];
+        }
+    }
+
+    // --- Post-processing ---
+    const vs = u.filter((_, i) =>  i % 2 === 0);
     const scale = 1;
 
-    // --- INTERNAL FORCE (shear & moment) using your fixed signs ---
+    // Internal forces (shear & moment)
     function q_total(x) {
         let s = 0;
-        for (const d of distLoads) if (x >= d.x0 && x <= d.x1) s += d.qFunc(x);
+        for (const d of distLoads) {
+            if (x >= d.x0 && x <= d.x1) s += d.qFunc(x);
+        }
         return s;
     }
 
     const samplesPerElement = 12;
     const totalSamples = nElements * samplesPerElement + 1;
     const x_samples = linspace(0, L, totalSamples);
-    const dx_global = L / (totalSamples - 1);
+    const dx = L / (totalSamples - 1);
     const eps = 1e-12;
 
-    const q_vals = x_samples.map(xi => q_total(xi));
-    const cumulative_q = [];
-    {
-        let cum = 0; cumulative_q.push(0);
-        for (let i = 1; i < x_samples.length; i++) {
-            const area = 0.5 * (q_vals[i - 1] + q_vals[i]) * dx_global;
-            cum += area; cumulative_q.push(cum);
-        }
+    const q_vals = x_samples.map(q_total);
+    const cumQ = [];
+    let cum = 0; cumQ.push(0);
+    for (let i = 1; i < x_samples.length; i++) {
+        cum += 0.5 * (q_vals[i - 1] + q_vals[i]) * dx;
+        cumQ.push(cum);
     }
 
-    const pLoads = pointLoads.map(p => ({ x: p.x, val: p.Fy }));
-    const pMoms = pointMoments.map(p => ({ x: p.x, val: p.M }));
-
-    function isAtConstrainedNode(x) {
-        for (let j = 0; j < nNodes; j++) {
-            if (Math.abs(x - xs[j]) < eps && (constrained.has(2 * j) || constrained.has(2 * j + 1))) return true;
-        }
-        return false;
-    }
-
-    const cumulativeAppliedPointLoadsAtSample = x_samples.map(xi => {
+    const pointLoadSum = x_samples.map(x => {
         let s = 0;
-        for (const pl of pLoads) if (!isAtConstrainedNode(pl.x) && pl.x < xi - eps) s += pl.val;
-        return s;
-    });
-    const cumulativeAppliedMomAtSample = x_samples.map(xi => {
-        let s = 0;
-        for (const pm of pMoms) if (!isAtConstrainedNode(pm.x) && pm.x < xi - eps) s += pm.val;
+        for (const p of pointLoads) if (p.x < x - eps) s += p.Fy;
         return s;
     });
 
-    const cumulativeSupportReactionAtSample = x_samples.map(xi => {
+    const supportReactionSum = x_samples.map(x => {
         let s = 0;
         for (let i = 0; i < nNodes; i++) {
-            if (xs[i] < xi - eps && constrained.has(2 * i)) s += reactions[2 * i] || 0;
-        }
-        return s;
-    });
-    const cumulativeSupportReactionMomAtSample = x_samples.map(xi => {
-        let s = 0;
-        for (let i = 0; i < nNodes; i++) {
-            if (xs[i] < xi - eps && constrained.has(2 * i + 1)) s += reactions[2 * i + 1] || 0;
+            if (xs[i] < x - eps && constrained.has(2 * i)) {
+                s += reactions[2 * i] || 0;
+            }
         }
         return s;
     });
 
-    // Use the sign convention that made your diagrams correct
-    const shear_samples = [];
-    for (let i = 0; i < x_samples.length; i++) {
-        const Vx = cumulativeSupportReactionAtSample[i]
-            + cumulativeAppliedPointLoadsAtSample[i]
-            - cumulative_q[i];
-        shear_samples.push(Vx);
+    const shear_samples = x_samples.map((_, i) =>
+        supportReactionSum[i] + pointLoadSum[i] - cumQ[i]
+    );
+
+    const cumV = [];
+    cum = 0; cumV.push(0);
+    for (let i = 1; i < x_samples.length; i++) {
+        cum += 0.5 * (shear_samples[i - 1] + shear_samples[i]) * dx;
+        cumV.push(cum);
     }
 
-    const cumulativeIntegralV = [];
-    {
-        let cumV = 0; cumulativeIntegralV.push(0);
-        for (let i = 1; i < x_samples.length; i++) {
-            const areaV = 0.5 * (shear_samples[i - 1] + shear_samples[i]) * dx_global;
-            cumV += areaV; cumulativeIntegralV.push(cumV);
-        }
-    }
-
-    const moment_samples = [];
-    for (let i = 0; i < x_samples.length; i++) {
-        const Mx = - cumulativeSupportReactionMomAtSample[i]
-            - cumulativeAppliedMomAtSample[i]
-            + cumulativeIntegralV[i];
-        moment_samples.push(Mx);
-    }
+    const moment_samples = x_samples.map((_, i) => cumV[i]);
 
     return {
         x: xs,
@@ -282,5 +323,3 @@ export function solveBeam(L, nElements, E, I, constraints = [], loads = []) {
         moment_samples
     };
 }
-
-

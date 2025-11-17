@@ -15,6 +15,9 @@ import {
 
 import { evaluate, parse } from "mathjs";
 
+
+
+
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend);
 
 const Button = ({ children, ...p }) => (
@@ -42,6 +45,9 @@ export default function App() {
   const [scale, setScale] = useState(1.0);
   const [errorMsg, setErrorMsg] = useState(null);
   const [loading, setLoading] = useState(false);
+  const SUPPORT_TYPES = ["PIN", "FIXED", "FREE", "ELASTIC", "PRESCRIBED"];
+  const [leftExtra, setLeftExtra] = useState({});      // ky, ktheta, v, theta
+  const [rightExtra, setRightExtra] = useState({});
 
   const debounceRef = useRef(null);
   const idCounter = useRef(0);
@@ -81,15 +87,55 @@ export default function App() {
       return null;
     }
 
-    let constraints = [
-      [0.0, leftType.toUpperCase()],
-      [L, rightType.toUpperCase()],
-    ];
+    let constraints = [];
 
+    // Helper to parse extra fields safely
+    function parseExtra(obj, keys) {
+      const result = {};
+      for (const k of keys) {
+        if (obj[k] !== undefined && obj[k] !== "") {
+          const val = safeParseFloat(obj[k]);
+          if (val !== null) result[k] = val;
+        }
+      }
+      return Object.keys(result).length ? result : null;
+    }
+
+    // Left support
+    if (["PIN", "FIXED", "FREE"].includes(leftType)) {
+      constraints.push([0.0, leftType.toUpperCase()]);
+    } else if (leftType === "ELASTIC") {
+      const extra = parseExtra(leftExtra, ["ky", "ktheta"]);
+      if (extra) constraints.push([0.0, "ELASTIC", extra]);
+    } else if (leftType === "PRESCRIBED") {
+      const extra = parseExtra(leftExtra, ["v", "theta"]);
+      if (extra) constraints.push([0.0, "PRESCRIBED", extra]);
+    }
+
+    // Right support
+    if (["PIN", "FIXED", "FREE"].includes(rightType)) {
+      constraints.push([L, rightType.toUpperCase()]);
+    } else if (rightType === "ELASTIC") {
+      const extra = parseExtra(rightExtra, ["ky", "ktheta"]);
+      if (extra) constraints.push([L, "ELASTIC", extra]);
+    } else if (rightType === "PRESCRIBED") {
+      const extra = parseExtra(rightExtra, ["v", "theta"]);
+      if (extra) constraints.push([L, "PRESCRIBED", extra]);
+    }
+
+    // Interior supports
     interiorSupports.forEach(item => {
       let x = safeParseFloat(item.xStr, 0, L);
-      if (x !== null && x > 0 && x < L) {
+      if (x === null || x <= 0 || x >= L) return;
+
+      if (["PIN", "FIXED", "FREE"].includes(item.type)) {
         constraints.push([x, item.type.toUpperCase()]);
+      } else if (item.type === "ELASTIC") {
+        const extra = parseExtra(item, ["ky", "ktheta"]);
+        if (extra) constraints.push([x, "ELASTIC", extra]);
+      } else if (item.type === "PRESCRIBED") {
+        const extra = parseExtra(item, ["v", "theta"]);
+        if (extra) constraints.push([x, "PRESCRIBED", extra]);
       }
     });
 
@@ -175,7 +221,18 @@ export default function App() {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(runSim, 500);
     return () => clearTimeout(debounceRef.current);
-  }, [lengthStr, EStr, IStr, nElementsStr, leftType, rightType, JSON.stringify(interiorSupports), JSON.stringify(loadItems)]);
+  }, [
+    lengthStr,
+    EStr,
+    IStr,
+    nElementsStr,
+    leftType,
+    rightType,
+    JSON.stringify(leftExtra),     
+    JSON.stringify(rightExtra),     
+    JSON.stringify(interiorSupports), // already correct, but now includes ky/kθ/v/θ
+    JSON.stringify(loadItems)
+  ]);
 
   const addLoad = (type) => {
     const currentL = safeParseFloat(lengthStr);
@@ -198,9 +255,16 @@ export default function App() {
   const deleteLoad = (id) => setLoadItems(prev => prev.filter(i => i.id !== id));
   const addInteriorSupport = () => {
     const mid = (safeParseFloat(lengthStr) || 6) / 2;
-    setInteriorSupports(prev => [...prev, { id: idCounter.current++, xStr: mid.toFixed(1), type: "PIN" }]);
+    setInteriorSupports(prev => [...prev, {
+      id: idCounter.current++,
+      xStr: mid.toFixed(1),
+      type: "PIN",
+      ky: "", ktheta: "", v: "", theta: ""   // extra fields
+    }]);
   };
-  const updateInterior = (id, field, value) => setInteriorSupports(prev => prev.map(i => i.id === id ? { ...i, [field]: value } : i));
+  const updateInterior = (id, field, value) => setInteriorSupports(prev =>
+    prev.map(i => i.id === id ? { ...i, [field]: value } : i)
+  );
   const deleteInterior = (id) => setInteriorSupports(prev => prev.filter(i => i.id !== id));
 
   return (
@@ -228,25 +292,80 @@ export default function App() {
           <div>
             <Label>Left support (x=0)</Label>
             <select className="border p-2 w-full" value={leftType} onChange={e => setLeftType(e.target.value)}>
-              <option>PIN</option><option>FIXED</option><option>FREE</option>
+              {SUPPORT_TYPES.map(t => <option key={t}>{t}</option>)}
             </select>
+            {["ELASTIC", "PRESCRIBED"].includes(leftType) && (
+              <div className="mt-2 pl-4 space-y-2">
+                {leftType === "ELASTIC" && (
+                  <>
+                    <Input placeholder="ky (N/m)" value={leftExtra?.ky || ""} onChange={e => setLeftExtra({ ...leftExtra, ky: e.target.value })} />
+                    <Input placeholder="kθ (Nm/rad)" value={leftExtra?.ktheta || ""} onChange={e => setLeftExtra({ ...leftExtra, ktheta: e.target.value })} />
+                  </>
+                )}
+                {leftType === "PRESCRIBED" && (
+                  <>
+                    <Input placeholder="Prescribed v (m)" value={leftExtra?.v || ""} onChange={e => setLeftExtra({ ...leftExtra, v: e.target.value })} />
+                    <Input placeholder="Prescribed θ (rad)" value={leftExtra?.theta || ""} onChange={e => setLeftExtra({ ...leftExtra, theta: e.target.value })} />
+                  </>
+                )}
+              </div>
+            )}
           </div>
+
           <div>
             <Label>Right support (x={lengthStr || "L"})</Label>
             <select className="border p-2 w-full" value={rightType} onChange={e => setRightType(e.target.value)}>
-              <option>PIN</option><option>FIXED</option><option>FREE</option>
+              {SUPPORT_TYPES.map(t => <option key={t}>{t}</option>)}
             </select>
+            {["ELASTIC", "PRESCRIBED"].includes(rightType) && (
+              <div className="mt-2 pl-4 space-y-2">
+                {rightType === "ELASTIC" && (
+                  <>
+                    <Input placeholder="ky (N/m)" value={rightExtra?.ky || ""} onChange={e => setRightExtra({ ...rightExtra, ky: e.target.value })} />
+                    <Input placeholder="kθ (Nm/rad)" value={rightExtra?.ktheta || ""} onChange={e => setRightExtra({ ...rightExtra, ktheta: e.target.value })} />
+                  </>
+                )}
+                {rightType === "PRESCRIBED" && (
+                  <>
+                    <Input placeholder="Prescribed v (m)" value={rightExtra?.v || ""} onChange={e => setRightExtra({ ...rightExtra, v: e.target.value })} />
+                    <Input placeholder="Prescribed θ (rad)" value={rightExtra?.theta || ""} onChange={e => setRightExtra({ ...rightExtra, theta: e.target.value })} />
+                  </>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
         <h3 className="mt-6 font-semibold">Interior Supports</h3>
         {interiorSupports.map(item => (
-          <div key={item.id} className="flex gap-2 mt-2">
-            <Input placeholder="x (m)" value={item.xStr} onChange={e => updateInterior(item.id, 'xStr', e.target.value)} />
-            <select value={item.type} onChange={e => updateInterior(item.id, 'type', e.target.value)}>
-              <option>PIN</option><option>FIXED</option><option>FREE</option>
-            </select>
-            <Button onClick={() => deleteInterior(item.id)}>Delete</Button>
+          <div key={item.id} className="border rounded p-4 mt-4 bg-gray-50">
+            <div className="flex gap-2 items-end">
+              <div className="flex-1">
+                <Label>Position x (m)</Label>
+                <Input value={item.xStr} onChange={e => updateInterior(item.id, 'xStr', e.target.value)} />
+              </div>
+              <select value={item.type} onChange={e => updateInterior(item.id, 'type', e.target.value)}>
+                {SUPPORT_TYPES.map(t => <option key={t}>{t}</option>)}
+              </select>
+              <Button onClick={() => deleteInterior(item.id)}>Delete</Button>
+            </div>
+
+            {["ELASTIC", "PRESCRIBED"].includes(item.type) && (
+              <div className="mt-3 pl-4 grid grid-cols-2 gap-3">
+                {item.type === "ELASTIC" && (
+                  <>
+                    <div><Label>ky (N/m)</Label><Input value={item.ky || ""} onChange={e => updateInterior(item.id, 'ky', e.target.value)} /></div>
+                    <div><Label>kθ (Nm/rad)</Label><Input value={item.ktheta || ""} onChange={e => updateInterior(item.id, 'ktheta', e.target.value)} /></div>
+                  </>
+                )}
+                {item.type === "PRESCRIBED" && (
+                  <>
+                    <div><Label>Prescribed v (m)</Label><Input value={item.v || ""} onChange={e => updateInterior(item.id, 'v', e.target.value)} /></div>
+                    <div><Label>Prescribed θ (rad)</Label><Input value={item.theta || ""} onChange={e => updateInterior(item.id, 'theta', e.target.value)} /></div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         ))}
         <Button className="mt-2 w-full" onClick={addInteriorSupport}>Add Interior Support</Button>
