@@ -15,8 +15,6 @@ import {
 
 import { evaluate, parse } from "mathjs";
 
-
-
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend);
 
 const Button = ({ children, ...p }) => (
@@ -115,8 +113,12 @@ export default function App() {
         if (item.isVariable) {
           const expr = item.exprStr?.trim();
           if (!expr) return;
-          // q(x) will be processed safely later
-          loads.push(["dist", x0, x1, expr]);
+          loads.push([
+            "dist",
+            x0,
+            x1,
+            (x) => safeQ(x, expr, L)
+          ]);
         } else {
           const q = safeParseFloat(item.qStr);
           if (q === null) return;

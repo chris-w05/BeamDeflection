@@ -99,16 +99,48 @@ export function solveBeam(L, nElements, E, I, constraints = [], loads = []) {
             xs.forEach((xi, i) => { const d = Math.abs(xi - x); if (d < minDist) { minDist = d; idx = i; } });
             F[2 * idx + 1] += M;
         }
+        // Inside your solver, replace the dist load block with:
         else if (load[0] === "dist") {
             const [_, x0, x1, q] = load;
-            const qFunc = typeof q === "function" ? q : () => q;
+            const qFunc = typeof q === "function" ? q : (x) => q;
+
+            const nIntegrationPoints = 25; // number of points per element
             for (let e = 0; e < nElements; e++) {
                 const xe1 = xs[e], xe2 = xs[e + 1];
                 const Le = xe2 - xe1;
-                const a = Math.max(xe1, x0), b = Math.min(xe2, x1);
+
+                const a = Math.max(xe1, x0);
+                const b = Math.min(xe2, x1);
                 if (b <= a) continue;
-                const s = (b - a) / Le;
-                const fe = uniformlyDistributedLoadVector(qFunc((a + b) / 2), Le);
+
+                // Local coordinate array along overlap
+                const xi = Array.from({ length: nIntegrationPoints }, (_, i) => a + (b - a) * i / (nIntegrationPoints - 1));
+                const s = xi.map(xiVal => (xiVal - xe1) / Le);
+
+                // Hermite shape functions
+                const N1 = s.map(si => 1 - 3 * si ** 2 + 2 * si ** 3);
+                const N2 = s.map(si => Le * (si - 2 * si ** 2 + si ** 3));
+                const N3 = s.map(si => 3 * si ** 2 - 2 * si ** 3);
+                const N4 = s.map(si => Le * (si ** 3 - si ** 2));
+
+                // Evaluate q(x) at all integration points
+                const qvals = xi.map(xiVal => qFunc(xiVal));
+
+                // Approximate integral using trapezoidal rule
+                const trapz = (y, dx) => {
+                    let sum = 0;
+                    for (let i = 0; i < y.length - 1; i++) {
+                        sum += 0.5 * (y[i] + y[i + 1]) * dx;
+                    }
+                    return sum;
+                };
+                const dx = (b - a) / (nIntegrationPoints - 1);
+                const f1 = trapz(qvals.map((qv, i) => qv * N1[i]), dx);
+                const f2 = trapz(qvals.map((qv, i) => qv * N2[i]), dx);
+                const f3 = trapz(qvals.map((qv, i) => qv * N3[i]), dx);
+                const f4 = trapz(qvals.map((qv, i) => qv * N4[i]), dx);
+
+                const fe = [f1, f2, f3, f4];
                 const dofs = [2 * e, 2 * e + 1, 2 * (e + 1), 2 * (e + 1) + 1];
                 for (let i = 0; i < 4; i++) F[dofs[i]] += fe[i];
             }
