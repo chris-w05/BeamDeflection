@@ -36,6 +36,8 @@ export default function App() {
   const [interiorSupports, setInteriorSupports] = useState([]);
   const [loadItems, setLoadItems] = useState([]);
   const [chartData, setChartData] = useState({ labels: [], datasets: [] });
+  const [shearData, setShearData] = useState({ labels: [], datasets: [] });
+  const [momentData, setMomentData] = useState({ labels: [], datasets: [] });
   const [reactions, setReactions] = useState(null);
   const [scale, setScale] = useState(1.0);
   const [errorMsg, setErrorMsg] = useState(null);
@@ -56,7 +58,6 @@ export default function App() {
     return Math.max(min, Math.min(max, v)); // clamp to [min, max]
   }
 
-
   //For parsing distributed loads
   function safeQ(x, expr, L) {
     try {
@@ -68,7 +69,6 @@ export default function App() {
       return 0; // fallback
     }
   }
-
 
   function buildPayload() {
     const L = safeParseFloat(lengthStr, 0.001) || 6.0;       // length > 0
@@ -139,6 +139,8 @@ export default function App() {
       const res = await runBeamSimulation(payload);
       setReactions(res.reactions);
       setScale(res.scale);
+
+      // Deflection / undeformed
       setChartData({
         labels: res.x.map(xi => xi.toFixed(3)),
         datasets: [
@@ -146,6 +148,22 @@ export default function App() {
           { label: "Undeformed", data: res.undeformed, borderColor: "#000", borderDash: [5, 5] },
         ],
       });
+
+      // Shear and Moment: use the returned sampled arrays (x_samples, shear_samples, moment_samples)
+      if (res.x_samples && res.shear_samples && res.moment_samples) {
+        const labels = res.x_samples.map(xi => xi.toFixed(3));
+        setShearData({
+          labels,
+          datasets: [{ label: "Shear V(x) (N)", data: res.shear_samples, tension: 0.1 }],
+        });
+        setMomentData({
+          labels,
+          datasets: [{ label: "Moment M(x) (Nm)", data: res.moment_samples, tension: 0.1 }],
+        });
+      } else {
+        setShearData({ labels: [], datasets: [] });
+        setMomentData({ labels: [], datasets: [] });
+      }
     } catch (err) {
       setErrorMsg(err.message || "API error");
     } finally {
@@ -292,7 +310,27 @@ export default function App() {
         {loading && <p className="text-blue-600">Solving...</p>}
         {errorMsg && <p className="text-red-600">{errorMsg}</p>}
         {!loading && chartData.labels?.length > 0 ? (
-          <Line data={chartData} options={{ responsive: true, plugins: { legend: { position: "top" } } }} />
+          <>
+            <div className="mb-4">
+              <Line data={chartData} options={{ responsive: true, plugins: { legend: { position: "top" } } }} />
+            </div>
+
+            {/* Shear diagram */}
+            <div className="mb-4">
+              <h3 className="font-semibold">Shear Diagram</h3>
+              {shearData.labels?.length ? (
+                <Line data={shearData} options={{ responsive: true, plugins: { legend: { position: "top" } }, scales: { y: { beginAtZero: false } } }} />
+              ) : <p className="text-gray-500 italic">No shear data available.</p>}
+            </div>
+
+            {/* Moment diagram */}
+            <div className="mb-4">
+              <h3 className="font-semibold">Moment Diagram</h3>
+              {momentData.labels?.length ? (
+                <Line data={momentData} options={{ responsive: true, plugins: { legend: { position: "top" } }, scales: { y: { beginAtZero: false } } }} />
+              ) : <p className="text-gray-500 italic">No moment data available.</p>}
+            </div>
+          </>
         ) : (
           <p className="text-gray-500 italic">
             Enter beam length, E, I, add supports/loads → deflection plot will appear automatically.
