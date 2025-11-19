@@ -257,14 +257,13 @@ export function solveBeam(L, nElements, E, I, constraints = [], loads = []) {
     }
 
     // --- Post-processing ---
-    const vs = u.filter((_, i) =>  i % 2 === 0);
+    const vs = u.filter((_, i) => i % 2 === 0); // unchanged
     const scale = 1;
 
-    // Internal forces (shear & moment)
     function q_total(x) {
         let s = 0;
         for (const d of distLoads) {
-            if (x >= d.x0 && x <= d.x1) s += d.qFunc(x);
+            if (x >= d.x0 && x <= d.x1) s += Number(d.qFunc(x)); // coerce to Number
         }
         return s;
     }
@@ -273,44 +272,96 @@ export function solveBeam(L, nElements, E, I, constraints = [], loads = []) {
     const totalSamples = nElements * samplesPerElement + 1;
     const x_samples = linspace(0, L, totalSamples);
     const dx = L / (totalSamples - 1);
-    const eps = 1e-12;
+    const eps = 1e-10;
 
+    // Precompute distributed load integral (cumulative q)
     const q_vals = x_samples.map(q_total);
-    const cumQ = [];
-    let cum = 0; cumQ.push(0);
+    const cumQ = new Array(x_samples.length);
+    let cum = 0;
+    cumQ[0] = 0;
     for (let i = 1; i < x_samples.length; i++) {
+        // trapezoid integrate q over [x_{i-1}, x_i]
         cum += 0.5 * (q_vals[i - 1] + q_vals[i]) * dx;
-        cumQ.push(cum);
+        cumQ[i] = cum;
     }
 
-    const pointLoadSum = x_samples.map(x => {
-        let s = 0;
-        for (const p of pointLoads) if (p.x < x - eps) s += p.Fy;
-        return s;
+    // Build lists of concentrated vertical forces and concentrated moments.
+    // These will be used as step contributions (included when their position is <= current x)
+    const concentratedForces = []; // {x, F} -- point loads and vertical reactions
+    for (const p of pointLoads) {
+        concentratedForces.push({ x: Number(p.x), F: Number(p.Fy) });
+    }
+    // vertical components of reactions at constrained translational DOFs:
+    for (let i = 0; i < nNodes; i++) {
+        const dof = 2 * i; // vertical DOF
+        if (constrained.has(dof)) {
+            const Rx = Number(reactions[dof] || 0);
+            // include only if nonzero (optional) - but push anyway for clarity
+            concentratedForces.push({ x: xs[i], F: Rx });
+        }
+    }
+
+    const concentratedMoments = [];
+
+    // 1. Applied moments → MUST be included (cause real jump)
+    for (const pm of pointMoments) {
+        concentratedMoments.push({ x: Number(pm.x), M: Number(pm.M) });
+    }
+
+    // 2. Reaction moments → include ONLY at nodes where rotation is constrained
+    for (let i = 0; i < nNodes; i++) {
+        const rotDof = 2 * i + 1;
+        if (constrained.has(rotDof)) {  // FIXED support or prescribed rotation
+            const Mr = reactions[rotDof] || 0;
+            if (Math.abs(Mr) > 1e-12) {
+                concentratedMoments.push({ x: xs[i], M: Number(Mr) });
+            }
+        }
+    }
+
+    concentratedMoments.sort((a, b) => a.x - b.x);
+
+    // Use simple >= (no eps needed if points are exactly hit)
+    const pointMomentSum = x_samples.map(x => {
+        let sum = 0;
+        for (const cm of concentratedMoments) {
+            if (x >= cm.x) sum -= cm.M;
+        }
+        return sum;
     });
 
-    const supportReactionSum = x_samples.map(x => {
+    // precompute step sums across samples
+    // Recommended fix:
+    const pointLoadSum = x_samples.map(x => {
         let s = 0;
-        for (let i = 0; i < nNodes; i++) {
-            if (xs[i] < x - eps && constrained.has(2 * i)) {
-                s += reactions[2 * i] || 0;
-            }
+        for (const cf of concentratedForces) {
+            if (x >= cf.x) s += cf.F;        // include exactly at x
         }
         return s;
     });
 
+    // cumulative shear = integral of q (cumQ) + sum of concentrated vertical forces to the left
+    // (Note: sign of F should be whatever sign you store in pointLoads / reactions)
     const shear_samples = x_samples.map((_, i) =>
-        supportReactionSum[i] + pointLoadSum[i] - cumQ[i]
+        // cumQ already is integral of distributed q from 0..x
+        // add concentrated vertical forces located left of x
+        cumQ[i] + pointLoadSum[i]
     );
 
-    const cumV = [];
-    cum = 0; cumV.push(0);
+    // Integrate shear to get bending moment due to shear:
+    const cumMomentFromShear = [];
+    let Macc = 0;
+    cumMomentFromShear.push(0);
     for (let i = 1; i < x_samples.length; i++) {
-        cum += 0.5 * (shear_samples[i - 1] + shear_samples[i]) * dx;
-        cumV.push(cum);
+        // trapezoid integrate shear to get moment contribution
+        Macc += 0.5 * (shear_samples[i - 1] + shear_samples[i]) * dx;
+        cumMomentFromShear.push(Macc);
     }
 
-    const moment_samples = x_samples.map((_, i) => cumV[i]);
+    // Final internal moment at each sample:
+    const moment_samples = x_samples.map((_, i) =>
+        cumMomentFromShear[i] + pointMomentSum[i]
+    );
 
     return {
         x: xs,
